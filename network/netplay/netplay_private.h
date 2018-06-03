@@ -175,7 +175,20 @@ enum netplay_cmd
    /* CMD_CFG streamlines sending multiple
       configurations. This acknowledges
       each one individually */
-   NETPLAY_CMD_CFG_ACK        = 0x0062
+   NETPLAY_CMD_CFG_ACK        = 0x0062,
+
+   /* Replay helper commands */
+
+   /* Requests a replay, given an 'other' frame, state, client making the
+    * request and request sequence number. */
+   NETPLAY_CMD_REPLAY_REQ     = 0x0080,
+
+   /* Stop replaying */
+   NETPLAY_CMD_REPLAY_STOP    = 0x0081,
+
+   /* Replay response. The replay helper sends this for every frame it replays,
+    * until it's asked to stop. */
+   NETPLAY_CMD_REPLAY_RESP    = 0x0082
 };
 
 #define NETPLAY_CMD_SYNC_BIT_PAUSED    (1U<<31)
@@ -380,6 +393,24 @@ struct compression_transcoder
    void *decompression_stream;
 };
 
+enum netplay_replay_helper_status
+{
+   // N/A: No replay helper involved
+   NETPLAY_REPLAY_HELPER_NONE,
+
+   // We've launched a replay helper but not received a connection yet
+   NETPLAY_REPLAY_HELPER_LAUNCHED,
+
+   // We've received a connection but not finished handshake
+   NETPLAY_REPLAY_HELPER_HANDSHAKE,
+
+   // We have a replay helper
+   NETPLAY_REPLAY_HELPER_HAVE,
+
+   // We are a replay helper
+   NETPLAY_REPLAY_HELPER_ARE
+};
+
 struct netplay
 {
    /* Are we the server? */
@@ -388,11 +419,17 @@ struct netplay
    /* Are we the connected? */
    bool is_connected;
 
+   /* Our status with respect to replay helper */
+   enum netplay_replay_helper_status replay_helper_status;
+
    /* Our nickname */
    char nick[NETPLAY_NICK_LEN];
 
    /* TCP connection for listening (server only) */
    int listen_fd;
+
+   /* TCP connection to listen for replay helper */
+   int replay_helper_listen_fd;
 
    /* Our client number */
    uint32_t self_client_num;
@@ -404,6 +441,7 @@ struct netplay
    struct netplay_connection *connections;
    size_t connections_size;
    struct netplay_connection one_connection; /* Client only */
+   struct netplay_connection replay_helper_connection;
 
    /* Bitmap of clients with input devices */
    uint32_t connected_players;
@@ -443,6 +481,9 @@ struct netplay
 
    /* TCP port (only set if serving) */
    uint16_t tcp_port;
+
+   /* TCP port for the replay helper */
+   uint16_t replay_helper_tcp_port;
 
    /* NAT traversal info (if NAT traversal is used and serving) */
    bool nat_traversal, nat_traversal_task_oustanding;
@@ -494,6 +535,16 @@ struct netplay
    /* A pointer used temporarily for replay. */
    size_t replay_ptr;
    uint32_t replay_frame_count;
+
+   /* Is our replay helper (or us, if we are a replay helper) currently running
+    * a replay? */
+   bool replay_helper_active;
+
+   /* The frame when the replay helper joined (it can't rewind before this point) */
+   uint32_t replay_helper_join_frame;
+
+   /* The identifier of the current replay helper replay */
+   uint32_t replay_helper_replay;
 
    /* Size of savestates */
    size_t state_size;
@@ -714,6 +765,19 @@ bool netplay_lan_ad_server(netplay_t *netplay);
  **/
 void netplay_load_savestate(netplay_t *netplay,
       retro_ctx_serialize_info_t *serial_info, bool save);
+/**
+ * netplay_replay_helper_reqresp
+ * @netplay              : pointer to netplay object
+ * @cmd                  : the command (either request or response)
+ * @frame                : the frame being sent
+ * @second               : For requests, the client number.
+ *                         For responses, the other frame number.
+ * @serial_info          : the savestate for the replay frame
+ *
+ * Request the replay helper to perform a replay for us.
+ */
+void netplay_replay_helper_reqresp(netplay_t *netplay, uint32_t cmd, uint32_t frame,
+      uint32_t second, retro_ctx_serialize_info_t *serial_info);
 
 /**
  * netplay_settings_share_mode
@@ -739,7 +803,7 @@ void input_poll_net(void);
  * Initialize our handshake and send the first part of the handshake protocol.
  */
 bool netplay_handshake_init_send(netplay_t *netplay,
-   struct netplay_connection *connection);
+   struct netplay_connection *connection, bool replay_helper);
 
 /**
  * netplay_handshake
@@ -747,7 +811,7 @@ bool netplay_handshake_init_send(netplay_t *netplay,
  * Data receiver for all handshake states.
  */
 bool netplay_handshake(netplay_t *netplay,
-   struct netplay_connection *connection, bool *had_input);
+   struct netplay_connection *connection, bool replay_helper, bool *had_input);
 
 
 /***************************************************************
@@ -791,7 +855,7 @@ bool netplay_wait_and_init_serialization(netplay_t *netplay);
  * Returns: new netplay data.
  */
 netplay_t *netplay_new(void *direct_host, const char *server, uint16_t port,
-   bool stateless_mode, int check_frames,
+   bool replay_helper, bool stateless_mode, int check_frames,
    const struct retro_callbacks *cb, bool nat_traversal, const char *nick,
    uint64_t quirks);
 

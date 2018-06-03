@@ -41,6 +41,7 @@
 /* Only used before init_netplay */
 static bool netplay_enabled = false;
 static bool netplay_is_client = false;
+static bool netplay_is_replay_helper = false;
 
 /* Used while Netplay is running */
 static netplay_t *netplay_data = NULL;
@@ -236,11 +237,15 @@ static bool get_self_input_state(netplay_t *netplay)
    }
 
    /* And send this input to our peers */
-   for (i = 0; i < netplay->connections_size; i++)
+   for (i = 0; i <= netplay->connections_size; i++)
    {
-      struct netplay_connection *connection = &netplay->connections[i];
+      struct netplay_connection *connection;
+      if (i == netplay->connections_size)
+         connection = &netplay->replay_helper_connection;
+      else
+         connection = &netplay->connections[i];
       if (connection->active && connection->mode >= NETPLAY_CONNECTION_CONNECTED)
-         netplay_send_cur_input(netplay, &netplay->connections[i]);
+         netplay_send_cur_input(netplay, connection);
    }
 
    /* Handle any delayed state changes */
@@ -374,7 +379,7 @@ static bool netplay_poll(void)
    {
       case NETPLAY_STALL_RUNNING_FAST:
       {
-         if (netplay_data->unread_frame_count + NETPLAY_MAX_STALL_FRAMES - 2
+         if (netplay_data->other_frame_count + NETPLAY_MAX_STALL_FRAMES - 2
                > netplay_data->self_frame_count)
          {
             netplay_data->stall = NETPLAY_STALL_NONE;
@@ -389,7 +394,9 @@ static bool netplay_poll(void)
       }
 
       case NETPLAY_STALL_SPECTATOR_WAIT:
-         if (netplay_data->self_mode == NETPLAY_CONNECTION_PLAYING || netplay_data->unread_frame_count > netplay_data->self_frame_count)
+         if (netplay_data->self_mode == NETPLAY_CONNECTION_PLAYING
+               || netplay_data->unread_frame_count
+                     > netplay_data->self_frame_count)
             netplay_data->stall = NETPLAY_STALL_NONE;
          break;
 
@@ -435,7 +442,7 @@ static bool netplay_poll(void)
       }
 
       /* Are we too far ahead? */
-      if (netplay_data->unread_frame_count + NETPLAY_MAX_STALL_FRAMES
+      if (netplay_data->other_frame_count + NETPLAY_MAX_STALL_FRAMES
             <= netplay_data->self_frame_count)
       {
          netplay_data->stall      = NETPLAY_STALL_RUNNING_FAST;
@@ -991,9 +998,13 @@ void netplay_post_frame(netplay_t *netplay)
    netplay_update_unread_ptr(netplay);
    netplay_sync_post_frame(netplay, false);
 
-   for (i = 0; i < netplay->connections_size; i++)
+   for (i = 0; i <= netplay->connections_size; i++)
    {
-      struct netplay_connection *connection = &netplay->connections[i];
+      struct netplay_connection *connection;
+      if (i == netplay->connections_size)
+         connection = &netplay->replay_helper_connection;
+      else
+         connection = &netplay->connections[i];
       if (connection->active &&
           !netplay_send_flush(&connection->send_packet_buffer, connection->fd,
             false))
@@ -1017,7 +1028,6 @@ static void netplay_force_future(netplay_t *netplay)
    /* Wherever we're inputting, that's where we consider our state to be loaded */
    netplay->run_ptr = netplay->self_ptr;
    netplay->run_frame_count = netplay->self_frame_count;
-
 
    /* We need to ignore any intervening data from the other side,
     * and never rewind past this */
@@ -1086,9 +1096,13 @@ void netplay_send_savestate(netplay_t *netplay,
    header[2] = htonl(netplay->run_frame_count);
    header[3] = htonl(serial_info->size);
 
-   for (i = 0; i < netplay->connections_size; i++)
+   for (i = 0; i <= netplay->connections_size; i++)
    {
-      struct netplay_connection *connection = &netplay->connections[i];
+      struct netplay_connection *connection;
+      if (i == netplay->connections_size)
+         connection = &netplay->replay_helper_connection;
+      else
+         connection = &netplay->connections[i];
       if (!connection->active ||
           connection->mode < NETPLAY_CONNECTION_CONNECTED ||
           connection->compression_supported != cx) continue;
@@ -1168,6 +1182,42 @@ void netplay_load_savestate(netplay_t *netplay,
 }
 
 /**
+ * netplay_replay_helper_reqresp
+ * @netplay              : pointer to netplay object
+ * @cmd                  : the command (either request or response)
+ * @frame                : the frame being sent
+ * @second               : For requests, the client number.
+ *                         For responses, the other frame number.
+ * @serial_info          : the savestate for the replay frame
+ *
+ * Request the replay helper to perform a replay for us.
+ */
+void netplay_replay_helper_reqresp(netplay_t *netplay, uint32_t cmd, uint32_t frame,
+      uint32_t second, retro_ctx_serialize_info_t *serial_info)
+{
+   uint32_t header[6];
+   struct netplay_connection *connection;
+   if (cmd == NETPLAY_CMD_REPLAY_REQ)
+      connection = &netplay->replay_helper_connection;
+   else
+      connection = &netplay->one_connection;
+
+   /* Send it to the replay helper */
+   header[0] = htonl(cmd);
+   header[1] = htonl(serial_info->size + 4*sizeof(uint32_t));
+   header[2] = htonl(frame);
+   header[3] = htonl(second);
+   header[4] = htonl(netplay->replay_helper_replay);
+   header[5] = htonl(serial_info->size);
+
+   if (!netplay_send(&connection->send_packet_buffer, connection->fd, header,
+         sizeof(header)) ||
+       !netplay_send(&connection->send_packet_buffer, connection->fd,
+         serial_info->data_const, serial_info->size))
+      netplay_hangup(netplay, connection);
+}
+
+/**
  * netplay_core_reset
  * @netplay              : pointer to netplay object
  *
@@ -1186,9 +1236,13 @@ static void netplay_core_reset(netplay_t *netplay)
    cmd[1] = htonl(sizeof(uint32_t));
    cmd[2] = htonl(netplay->self_frame_count);
 
-   for (i = 0; i < netplay->connections_size; i++)
+   for (i = 0; i <= netplay->connections_size; i++)
    {
-      struct netplay_connection *connection = &netplay->connections[i];
+      struct netplay_connection *connection;
+      if (i == netplay->connections_size)
+         connection = &netplay->replay_helper_connection;
+      else
+         connection = &netplay->connections[i];
       if (!connection->active ||
             connection->mode < NETPLAY_CONNECTION_CONNECTED) continue;
 
@@ -1283,6 +1337,7 @@ bool netplay_disconnect(netplay_t *netplay)
       return true;
    for (i = 0; i < netplay->connections_size; i++)
       netplay_hangup(netplay, &netplay->connections[i]);
+   netplay_hangup(netplay, &netplay->replay_helper_connection);
 
    deinit_netplay();
    return true;
@@ -1366,6 +1421,7 @@ bool init_netplay(void *direct_host, const char *server, unsigned port)
             : server_address_deferred) : NULL,
          netplay_is_client ? (!netplay_client_deferred ? port
             : server_port_deferred   ) : (port != 0 ? port : RARCH_DEFAULT_PORT),
+         netplay_is_replay_helper,
          settings->bools.netplay_stateless_mode,
          settings->ints.netplay_check_frames,
          &cbs,
@@ -1412,6 +1468,9 @@ bool netplay_driver_ctl(enum rarch_netplay_ctl_state state, void *data)
             netplay_is_client = false;
             goto done;
 
+         case RARCH_NETPLAY_CTL_ENABLE_REPLAY_HELPER:
+            netplay_is_replay_helper = true;
+            /* intentional fallthrough */
          case RARCH_NETPLAY_CTL_ENABLE_CLIENT:
             netplay_enabled = true;
             netplay_is_client = true;

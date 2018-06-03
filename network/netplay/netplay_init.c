@@ -216,6 +216,37 @@ static bool init_tcp_socket(netplay_t *netplay, void *direct_host,
    if (!ret)
       RARCH_ERR("Failed to set up netplay sockets.\n");
 
+   netplay->replay_helper_listen_fd = -1;
+   if (netplay->replay_helper_status == NETPLAY_REPLAY_HELPER_NONE)
+   {
+      struct sockaddr_in sin = {0};
+      struct sockaddr_storage sad = {0};
+
+      // We only want to listen on lo, so make the addrinfo manually
+      res = calloc(sizeof(struct addrinfo), 1);
+      if (!res)
+         return ret;
+      netplay->replay_helper_tcp_port = port+1;
+
+      res->ai_flags = AI_PASSIVE;
+      res->ai_family = AF_INET;
+      res->ai_socktype = SOCK_STREAM;
+      res->ai_addr = (struct sockaddr *) &sin;
+      res->ai_addrlen = sizeof(sin);
+      sin.sin_family = AF_INET;
+      sin.sin_addr.s_addr = htonl(0x7F000001);
+      sin.sin_port = htons(port+1);
+
+      // And listen for it
+      netplay->replay_helper_listen_fd = init_tcp_connection(
+            res,
+            false,
+            (struct sockaddr*)&sad,
+            sizeof(sad));
+
+      free(res);
+   }
+
    return ret;
 }
 
@@ -416,7 +447,7 @@ static bool netplay_init_buffers(netplay_t *netplay)
  * Returns: new netplay data.
  */
 netplay_t *netplay_new(void *direct_host, const char *server, uint16_t port,
-   bool stateless_mode, int check_frames,
+   bool replay_helper, bool stateless_mode, int check_frames,
    const struct retro_callbacks *cb, bool nat_traversal, const char *nick,
    uint64_t quirks)
 {
@@ -428,7 +459,10 @@ netplay_t *netplay_new(void *direct_host, const char *server, uint16_t port,
    netplay->tcp_port             = port;
    netplay->cbs                  = *cb;
    netplay->is_server            = (direct_host == NULL && server == NULL);
-   netplay->is_connected         = false;;
+   netplay->is_connected         = false;
+   netplay->replay_helper_status = replay_helper ?
+                                   NETPLAY_REPLAY_HELPER_ARE :
+                                   NETPLAY_REPLAY_HELPER_NONE;
    netplay->nat_traversal        = netplay->is_server ? nat_traversal : false;
    netplay->stateless_mode       = stateless_mode;
    netplay->check_frames         = check_frames;
@@ -487,7 +521,7 @@ netplay_t *netplay_new(void *direct_host, const char *server, uint16_t port,
    else
    {
       /* Start our handshake */
-      netplay_handshake_init_send(netplay, &netplay->connections[0]);
+      netplay_handshake_init_send(netplay, &netplay->connections[0], false);
 
       netplay->connections[0].mode = NETPLAY_CONNECTION_INIT;
       netplay->self_mode           = NETPLAY_CONNECTION_INIT;
@@ -541,6 +575,11 @@ void netplay_free(netplay_t *netplay)
          netplay_deinit_socket_buffer(&connection->send_packet_buffer);
          netplay_deinit_socket_buffer(&connection->recv_packet_buffer);
       }
+   }
+   if (netplay->replay_helper_connection.active)
+   {
+      netplay_deinit_socket_buffer(&netplay->replay_helper_connection.send_packet_buffer);
+      netplay_deinit_socket_buffer(&netplay->replay_helper_connection.recv_packet_buffer);
    }
 
    if (netplay->connections && netplay->connections != &netplay->one_connection)

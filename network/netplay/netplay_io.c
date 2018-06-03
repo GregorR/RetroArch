@@ -179,10 +179,14 @@ void netplay_delayed_state_change(netplay_t *netplay)
 {
    unsigned i;
 
-   for (i = 0; i < netplay->connections_size; i++)
+   for (i = 0; i <= netplay->connections_size; i++)
    {
       uint32_t client_num                   = (uint32_t)(i + 1);
-      struct netplay_connection *connection = &netplay->connections[i];
+      struct netplay_connection *connection;
+      if (i == netplay->connections_size)
+         connection = &netplay->replay_helper_connection;
+      else
+         connection = &netplay->connections[i];
        
       if ((connection->active || connection->mode == NETPLAY_CONNECTION_DELAYED_DISCONNECT) &&
           connection->delay_frame &&
@@ -260,9 +264,13 @@ static bool send_input_frame(netplay_t *netplay, struct delta_frame *dframe,
    }
    else
    {
-      for (i = 0; i < netplay->connections_size; i++)
+      for (i = 0; i <= netplay->connections_size; i++)
       {
-         struct netplay_connection *connection = &netplay->connections[i];
+         struct netplay_connection *connection;
+         if (i == netplay->connections_size)
+            connection = &netplay->replay_helper_connection;
+         else
+            connection = &netplay->connections[i];
          if (connection == except) continue;
          if (connection->active &&
              connection->mode >= NETPLAY_CONNECTION_CONNECTED &&
@@ -380,9 +388,13 @@ void netplay_send_raw_cmd_all(netplay_t *netplay,
    size_t size)
 {
    size_t i;
-   for (i = 0; i < netplay->connections_size; i++)
+   for (i = 0; i <= netplay->connections_size; i++)
    {
-      struct netplay_connection *connection = &netplay->connections[i];
+      struct netplay_connection *connection;
+      if (i == netplay->connections_size)
+         connection = &netplay->replay_helper_connection;
+      else
+         connection = &netplay->connections[i];
       if (connection == except)
          continue;
       if (connection->active && connection->mode >= NETPLAY_CONNECTION_CONNECTED)
@@ -402,9 +414,13 @@ static void netplay_send_flush_all(netplay_t *netplay,
    struct netplay_connection *except)
 {
    size_t i;
-   for (i = 0; i < netplay->connections_size; i++)
+   for (i = 0; i <= netplay->connections_size; i++)
    {
-      struct netplay_connection *connection = &netplay->connections[i];
+      struct netplay_connection *connection;
+      if (i == netplay->connections_size)
+         connection = &netplay->replay_helper_connection;
+      else
+         connection = &netplay->connections[i];
       if (connection == except)
          continue;
       if (connection->active && connection->mode >= NETPLAY_CONNECTION_CONNECTED)
@@ -894,7 +910,8 @@ if (recvd >= 0 && recvd < (ssize_t) (sz)) goto shrt; \
 else if (recvd < 0)
 
 static bool netplay_get_cmd(netplay_t *netplay,
-   struct netplay_connection *connection, bool *had_input)
+      struct netplay_connection *connection, bool replay_helper,
+      bool *had_input)
 {
    uint32_t cmd;
    uint32_t cmd_size;
@@ -902,7 +919,7 @@ static bool netplay_get_cmd(netplay_t *netplay,
 
    /* We don't handle the initial handshake here */
    if (connection->mode < NETPLAY_CONNECTION_CONNECTED)
-      return netplay_handshake(netplay, connection, had_input);
+      return netplay_handshake(netplay, connection, replay_helper, had_input);
 
    RECV(&cmd, sizeof(cmd))
       return false;
@@ -913,6 +930,14 @@ static bool netplay_get_cmd(netplay_t *netplay,
       return false;
 
    cmd_size = ntohl(cmd_size);
+
+   /* Replay helpers can only send one command */
+   if ((replay_helper && cmd != NETPLAY_CMD_REPLAY_RESP) ||
+       (!replay_helper && cmd == NETPLAY_CMD_REPLAY_RESP))
+   {
+      RARCH_ERR("Received invalid replay helper command!\n");
+      return netplay_cmd_nak(netplay, connection);
+   }
 
 #ifdef DEBUG_NETPLAY_STEPS
    RARCH_LOG("Received netplay command %X (%u) from %u\n", cmd, cmd_size,
@@ -943,9 +968,9 @@ static bool netplay_get_cmd(netplay_t *netplay,
             }
 
             RECV(&frame_num, sizeof(frame_num))
-               return false;
+               return netplay_cmd_nak(netplay, connection);
             RECV(&client_num, sizeof(client_num))
-               return false;
+               return netplay_cmd_nak(netplay, connection);
             frame_num = ntohl(frame_num);
             client_num = ntohl(client_num);
             client_num &= 0xFFFF;
@@ -1001,7 +1026,7 @@ static bool netplay_get_cmd(netplay_t *netplay,
                else if (frame_num > netplay->read_frame_count[client_num])
                {
                   /* Out of order = out of luck */
-                  RARCH_ERR("Netplay input out of order.\n");
+                  RARCH_ERR("Netplay input from %u out of order.\n", (unsigned) client_num);
                   return netplay_cmd_nak(netplay, connection);
                }
             }
@@ -1033,7 +1058,7 @@ static bool netplay_get_cmd(netplay_t *netplay,
                   return netplay_cmd_nak(netplay, connection);
                }
                RECV(istate->data, dsize*sizeof(uint32_t))
-                  return false;
+                  return netplay_cmd_nak(netplay, connection);
                for (di = 0; di < dsize; di++)
                   istate->data[di] = ntohl(istate->data[di]);
             }
@@ -1819,6 +1844,151 @@ static bool netplay_get_cmd(netplay_t *netplay,
             break;
          }
 
+      case NETPLAY_CMD_REPLAY_REQ:
+      case NETPLAY_CMD_REPLAY_RESP:
+         {
+            struct {
+               uint32_t frame;
+               union {
+                  uint32_t client_num;
+                  uint32_t other_frame;
+               };
+               uint32_t seq_num, sz;
+            } data;
+            size_t load_ptr;
+            uint32_t load_frame_count;
+            struct delta_frame *delta;
+            retro_ctx_serialize_info_t serial_info;
+
+            if (cmd == NETPLAY_CMD_REPLAY_REQ)
+            {
+               if (netplay->replay_helper_status != NETPLAY_REPLAY_HELPER_ARE)
+               {
+                  RARCH_ERR("Replay helper command to non-helper!\n");
+                  return netplay_cmd_nak(netplay, connection);
+               }
+            }
+            else if (cmd == NETPLAY_CMD_REPLAY_RESP)
+            {
+               if (!replay_helper)
+               {
+                  RARCH_ERR("Replay helper response from non-helper!\n");
+                  return netplay_cmd_nak(netplay, connection);
+               }
+            }
+
+            if (cmd_size != netplay->state_size + 4*sizeof(uint32_t))
+            {
+               RARCH_ERR("CMD_REPLAY_* with incorrect payload size.\n");
+               return netplay_cmd_nak(netplay, connection);
+            }
+
+            RECV(&data, sizeof(data))
+            {
+               RARCH_ERR("CMD_REPLAY_* failed to receive payload.\n");
+               return netplay_cmd_nak(netplay, connection);
+            }
+
+            if (cmd == NETPLAY_CMD_REPLAY_REQ)
+            {
+               /* Set our replay state as requested */
+               netplay->self_client_num = ntohl(data.client_num);
+               netplay->replay_helper_active = true;
+               netplay->replay_helper_replay = ntohl(data.seq_num);
+            }
+            else
+            {
+               /* We only care if this is the correct sequence */
+               if (ntohl(data.seq_num) != netplay->replay_helper_replay ||
+                   !netplay->replay_helper_active)
+               {
+                  /* Just discard this input */
+                  RECV(netplay->zbuffer, netplay->state_size)
+                  {
+                     RARCH_ERR("CMD_REPLAY_* failed to receive frame\n");
+                     return netplay_cmd_nak(netplay, connection);
+                  }
+                  break;
+               }
+            }
+
+            /* Find the right frame to load into */
+            data.frame = ntohl(data.frame);
+            for (load_ptr = 0; load_ptr < netplay->buffer_size; load_ptr++)
+            {
+               delta = &netplay->buffer[load_ptr];
+               if (delta->used && delta->frame == data.frame)
+               {
+                  load_frame_count = data.frame;
+                  break;
+               }
+            }
+            if (load_ptr == netplay->buffer_size)
+            {
+               RARCH_ERR("CMD_REPLAY_* failed to find frame.\n");
+               return netplay_cmd_nak(netplay, connection);
+            }
+
+            data.sz = ntohl(data.sz);
+            if (data.sz != netplay->state_size)
+            {
+               RARCH_ERR(
+                     "CMD_REPLAY_* received an unexpected save state size.\n");
+               return netplay_cmd_nak(netplay, connection);
+            }
+
+            /* Receive the frame */
+            RECV(delta->state, netplay->state_size)
+            {
+               RARCH_ERR("CMD_LOAD_SAVESTATE failed to receive savestate.\n");
+               return netplay_cmd_nak(netplay, connection);
+            }
+            serial_info.size = netplay->state_size;
+            serial_info.data = NULL;
+            serial_info.data_const = delta->state;
+
+            if (cmd == NETPLAY_CMD_REPLAY_REQ)
+            {
+               /* And return to it */
+               netplay->other_ptr = load_ptr;
+               netplay->other_frame_count = load_frame_count;
+               netplay->run_ptr = load_ptr;
+               netplay->run_frame_count = load_frame_count;
+               core_unserialize(&serial_info);
+            }
+            else
+            {
+               size_t new_other_ptr;
+               uint32_t new_other = ntohl(data.other_frame);
+
+               /* If we just loaded the current frame, bring it back */
+               if (load_frame_count == netplay->run_frame_count)
+               {
+                  netplay_send_raw_cmd(netplay, &netplay->replay_helper_connection,
+                        NETPLAY_CMD_REPLAY_STOP, NULL, 0);
+                  netplay->replay_helper_active = false;
+                  core_unserialize(&serial_info);
+               }
+
+               /* Update our other frame count too */
+               if (new_other > netplay->other_frame_count)
+               {
+                  for (new_other_ptr = 0; new_other_ptr < netplay->connections_size; new_other_ptr++)
+                  {
+                     delta = &netplay->buffer[new_other_ptr];
+                     if (delta->used && delta->frame == new_other)
+                        break;
+                  }
+                  if (new_other_ptr == netplay->connections_size)
+                     return netplay_cmd_nak(netplay, connection);
+
+                  netplay->other_ptr = new_other_ptr;
+                  netplay->other_frame_count = new_other;
+               }
+            }
+            break;
+         }
+
       default:
          RARCH_ERR("%s.\n", msg_hash_to_str(MSG_UNKNOWN_NETPLAY_COMMAND_RECEIVED));
          return netplay_cmd_nak(netplay, connection);
@@ -1846,17 +2016,21 @@ shrt:
 int netplay_poll_net_input(netplay_t *netplay, bool block)
 {
    bool had_input = false;
-   int max_fd = 0;
+   int max_fd = -1;
    size_t i;
 
-   for (i = 0; i < netplay->connections_size; i++)
+   for (i = 0; i <= netplay->connections_size; i++)
    {
-      struct netplay_connection *connection = &netplay->connections[i];
-      if (connection->active && connection->fd >= max_fd)
-         max_fd = connection->fd + 1;
+      struct netplay_connection *connection;
+      if (i == netplay->connections_size)
+         connection = &netplay->replay_helper_connection;
+      else
+         connection = &netplay->connections[i];
+      if (connection->active && connection->fd > max_fd)
+         max_fd = connection->fd;
    }
 
-   if (max_fd == 0)
+   if (max_fd == -1)
       return 0;
 
    netplay->timeout_cnt = 0;
@@ -1871,8 +2045,14 @@ int netplay_poll_net_input(netplay_t *netplay, bool block)
       for (i = 0; i < netplay->connections_size; i++)
       {
          struct netplay_connection *connection = &netplay->connections[i];
-         if (connection->active && !netplay_get_cmd(netplay, connection, &had_input))
+         if (connection->active && !netplay_get_cmd(netplay, connection, false, &had_input))
             netplay_hangup(netplay, connection);
+      }
+
+      if (netplay->replay_helper_connection.active)
+      {
+         if (!netplay_get_cmd(netplay, &netplay->replay_helper_connection, true, &had_input))
+            netplay_hangup(netplay, &netplay->replay_helper_connection);
       }
 
       if (block)
@@ -1898,7 +2078,7 @@ int netplay_poll_net_input(netplay_t *netplay, bool block)
                   FD_SET(connection->fd, &fds);
             }
 
-            if (socket_select(max_fd, &fds, NULL, NULL, &tv) < 0)
+            if (socket_select(max_fd+1, &fds, NULL, NULL, &tv) < 0)
                return -1;
 
             RARCH_LOG("Network is stalling at frame %u, count %u of %d ...\n",

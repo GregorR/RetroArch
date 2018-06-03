@@ -202,7 +202,8 @@ static uint32_t simple_rand_uint32(void)
  * Initialize our handshake and send the first part of the handshake protocol.
  */
 bool netplay_handshake_init_send(netplay_t *netplay,
-   struct netplay_connection *connection)
+   struct netplay_connection *connection,
+   bool replay_helper)
 {
    uint32_t header[6];
    settings_t *settings = config_get_ptr();
@@ -215,6 +216,7 @@ bool netplay_handshake_init_send(netplay_t *netplay,
    header[5] = htonl(netplay_impl_magic());
 
    if (netplay->is_server &&
+       !replay_helper &&
        (settings->paths.netplay_password[0] ||
         settings->paths.netplay_spectate_password[0]))
    {
@@ -456,7 +458,7 @@ error:
 }
 
 static void netplay_handshake_ready(netplay_t *netplay,
-      struct netplay_connection *connection)
+      struct netplay_connection *connection, bool replay_helper)
 {
    char msg[512];
    msg[0] = '\0';
@@ -471,7 +473,8 @@ static void netplay_handshake_ready(netplay_t *netplay,
       RARCH_LOG("%s %u\n", msg_hash_to_str(MSG_CONNECTION_SLOT), slot);
 
       /* Send them the savestate */
-      if (!(netplay->quirks &
+      if (!replay_helper &&
+          !(netplay->quirks &
                (NETPLAY_QUIRK_NO_SAVESTATES|NETPLAY_QUIRK_NO_TRANSMISSION)))
          netplay->force_send_savestate = true;
    }
@@ -482,6 +485,9 @@ static void netplay_handshake_ready(netplay_t *netplay,
             msg_hash_to_str(MSG_CONNECTED_TO),
             connection->nick);
    }
+
+   if (replay_helper)
+      netplay->replay_helper_join_frame = netplay->self_frame_count;
 
    RARCH_LOG("%s\n", msg);
    runloop_msg_queue_push(msg, 1, 180, false);
@@ -546,7 +552,7 @@ bool netplay_handshake_info(netplay_t *netplay,
  * Send a SYNC command.
  */
 bool netplay_handshake_sync(netplay_t *netplay,
-      struct netplay_connection *connection)
+      struct netplay_connection *connection, bool replay_helper)
 {
    /* If we're the server, now we send sync info */
    size_t i;
@@ -581,11 +587,14 @@ bool netplay_handshake_sync(netplay_t *netplay,
          /* And finally, sram */
          + mem_info.size);
    cmd[2]     = htonl(netplay->self_frame_count);
-   client_num = (uint32_t)(connection - netplay->connections + 1);
-    
+   if (replay_helper)
+      client_num = (uint32_t) -1;
+   else
+      client_num = (uint32_t)(connection - netplay->connections + 1);
+
    if (netplay->local_paused || netplay->remote_paused)
       client_num |= NETPLAY_CMD_SYNC_BIT_PAUSED;
-    
+
    cmd[3]     = htonl(client_num);
 
    if (!netplay_send(&connection->send_packet_buffer, connection->fd, cmd,
@@ -667,7 +676,9 @@ bool netplay_handshake_sync(netplay_t *netplay,
 
    /* Now we're ready! */
    connection->mode = NETPLAY_CONNECTION_SPECTATING;
-   netplay_handshake_ready(netplay, connection);
+   if (replay_helper)
+      netplay->replay_helper_status = NETPLAY_REPLAY_HELPER_HAVE;
+   netplay_handshake_ready(netplay, connection, replay_helper);
 
    return true;
 }
@@ -679,7 +690,8 @@ bool netplay_handshake_sync(netplay_t *netplay,
  * nickname.
  */
 bool netplay_handshake_pre_nick(netplay_t *netplay,
-   struct netplay_connection *connection, bool *had_input)
+   struct netplay_connection *connection, bool replay_helper,
+   bool *had_input)
 {
    struct nick_buf_s nick_buf;
    ssize_t recvd;
@@ -710,12 +722,13 @@ bool netplay_handshake_pre_nick(netplay_t *netplay,
       (sizeof(connection->nick) < sizeof(nick_buf.nick)) ?
       sizeof(connection->nick) : sizeof(nick_buf.nick));
 
-   if (netplay->is_server)
+   if (netplay->is_server || replay_helper)
    {
       settings_t *settings = config_get_ptr();
 
-      if (  settings->paths.netplay_password[0] ||
-            settings->paths.netplay_spectate_password[0])
+      if (  !replay_helper &&
+           (settings->paths.netplay_password[0] ||
+            settings->paths.netplay_spectate_password[0]))
       {
          /* There's a password, so just put them in PRE_PASSWORD mode */
          connection->mode = NETPLAY_CONNECTION_PRE_PASSWORD;
@@ -831,7 +844,8 @@ bool netplay_handshake_pre_password(netplay_t *netplay,
  * the password.
  */
 bool netplay_handshake_pre_info(netplay_t *netplay,
-   struct netplay_connection *connection, bool *had_input)
+   struct netplay_connection *connection, bool replay_helper,
+   bool *had_input)
 {
    struct info_buf_s info_buf;
    uint32_t cmd_size;
@@ -912,9 +926,9 @@ bool netplay_handshake_pre_info(netplay_t *netplay,
    }
 
    /* Now switch to the right mode */
-   if (netplay->is_server)
+   if (netplay->is_server || replay_helper)
    {
-      if (!netplay_handshake_sync(netplay, connection))
+      if (!netplay_handshake_sync(netplay, connection, replay_helper))
          return false;
 
    }
@@ -937,7 +951,8 @@ bool netplay_handshake_pre_info(netplay_t *netplay,
  * synchronization information.
  */
 bool netplay_handshake_pre_sync(netplay_t *netplay,
-   struct netplay_connection *connection, bool *had_input)
+   struct netplay_connection *connection, bool replay_helper,
+   bool *had_input)
 {
    uint32_t cmd[2];
    uint32_t new_frame_count, client_num;
@@ -977,7 +992,8 @@ bool netplay_handshake_pre_sync(netplay_t *netplay,
    RECV(&client_num, sizeof(client_num))
       return false;
    client_num = ntohl(client_num);
-   if (client_num & NETPLAY_CMD_SYNC_BIT_PAUSED)
+   if (client_num != (uint32_t) -1 &&
+       (client_num & NETPLAY_CMD_SYNC_BIT_PAUSED))
    {
       netplay->remote_paused = true;
       client_num ^= NETPLAY_CMD_SYNC_BIT_PAUSED;
@@ -1118,11 +1134,12 @@ bool netplay_handshake_pre_sync(netplay_t *netplay,
    *had_input = true;
    netplay->self_mode = NETPLAY_CONNECTION_SPECTATING;
    connection->mode = NETPLAY_CONNECTION_PLAYING;
-   netplay_handshake_ready(netplay, connection);
+   netplay_handshake_ready(netplay, connection, replay_helper);
    netplay_recv_flush(&connection->recv_packet_buffer);
 
    /* Ask to switch to playing mode if we should */
-   if (!settings->bools.netplay_start_as_spectator)
+   if (netplay->replay_helper_status != NETPLAY_REPLAY_HELPER_ARE &&
+       !settings->bools.netplay_start_as_spectator)
       return netplay_cmd_mode(netplay, NETPLAY_CONNECTION_PLAYING);
 
    return true;
@@ -1134,7 +1151,7 @@ bool netplay_handshake_pre_sync(netplay_t *netplay,
  * Data receiver for all handshake states.
  */
 bool netplay_handshake(netplay_t *netplay,
-   struct netplay_connection *connection, bool *had_input)
+   struct netplay_connection *connection, bool replay_helper, bool *had_input)
 {
    bool ret = false;
 
@@ -1144,16 +1161,16 @@ bool netplay_handshake(netplay_t *netplay,
          ret = netplay_handshake_init(netplay, connection, had_input);
          break;
       case NETPLAY_CONNECTION_PRE_NICK:
-         ret = netplay_handshake_pre_nick(netplay, connection, had_input);
+         ret = netplay_handshake_pre_nick(netplay, connection, replay_helper, had_input);
          break;
       case NETPLAY_CONNECTION_PRE_PASSWORD:
          ret = netplay_handshake_pre_password(netplay, connection, had_input);
          break;
       case NETPLAY_CONNECTION_PRE_INFO:
-         ret = netplay_handshake_pre_info(netplay, connection, had_input);
+         ret = netplay_handshake_pre_info(netplay, connection, replay_helper, had_input);
          break;
       case NETPLAY_CONNECTION_PRE_SYNC:
-         ret = netplay_handshake_pre_sync(netplay, connection, had_input);
+         ret = netplay_handshake_pre_sync(netplay, connection, replay_helper, had_input);
          break;
       case NETPLAY_CONNECTION_NONE:
       default:
