@@ -582,7 +582,8 @@ bool netplay_sync_pre_frame(netplay_t *netplay)
             netplay->force_send_savestate = false;
          }
 
-         if (netplay->replay_helper_status == NETPLAY_REPLAY_HELPER_ARE &&
+         if (!netplay->stall &&
+             netplay->replay_helper_status == NETPLAY_REPLAY_HELPER_ARE &&
              netplay->replay_helper_active)
          {
             /* Send this state to the main instance */

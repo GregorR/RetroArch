@@ -271,6 +271,12 @@ enum rarch_netplay_stall_reason
    /* We're in spectator or slave mode and are running ahead at all */
    NETPLAY_STALL_SPECTATOR_WAIT,
 
+   /* We're a replay helper and are inactive */
+   NETPLAY_STALL_REPLAY_HELPER_INACTIVE,
+
+   /* We're a replay helper and are running ahead of our client */
+   NETPLAY_STALL_REPLAY_HELPER_FAST,
+
    /* Our actual execution is catching up with latency-adjusted input frames */
    NETPLAY_STALL_INPUT_LATENCY,
 

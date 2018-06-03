@@ -988,10 +988,10 @@ static void retroarch_parse_input_and_config(int argc, char *argv[])
                configuration_set_uint(settings,
                      settings->uints.netplay_port,
                      (int)strtoul(optarg, NULL, 0));
-               /*strcpy(settings->arrays.video_driver, "null");
+               //strcpy(settings->arrays.video_driver, "null");
                strcpy(settings->arrays.audio_driver, "null");
                strcpy(settings->arrays.input_driver, "null");
-               strcpy(settings->arrays.input_joypad_driver, "null");*/
+               strcpy(settings->arrays.input_joypad_driver, "null");
             }
             break;
 

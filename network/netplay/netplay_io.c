@@ -1868,7 +1868,7 @@ static bool netplay_get_cmd(netplay_t *netplay,
                   return netplay_cmd_nak(netplay, connection);
                }
             }
-            else if (cmd == NETPLAY_CMD_REPLAY_RESP)
+            else
             {
                if (!replay_helper)
                {
@@ -1913,15 +1913,12 @@ static bool netplay_get_cmd(netplay_t *netplay,
             }
 
             /* Find the right frame to load into */
-            data.frame = ntohl(data.frame);
+            load_frame_count = ntohl(data.frame);
             for (load_ptr = 0; load_ptr < netplay->buffer_size; load_ptr++)
             {
                delta = &netplay->buffer[load_ptr];
-               if (delta->used && delta->frame == data.frame)
-               {
-                  load_frame_count = data.frame;
+               if (delta->used && delta->frame == load_frame_count)
                   break;
-               }
             }
             if (load_ptr == netplay->buffer_size)
             {
@@ -1973,13 +1970,13 @@ static bool netplay_get_cmd(netplay_t *netplay,
                /* Update our other frame count too */
                if (new_other > netplay->other_frame_count)
                {
-                  for (new_other_ptr = 0; new_other_ptr < netplay->connections_size; new_other_ptr++)
+                  for (new_other_ptr = 0; new_other_ptr < netplay->buffer_size; new_other_ptr++)
                   {
                      delta = &netplay->buffer[new_other_ptr];
                      if (delta->used && delta->frame == new_other)
                         break;
                   }
-                  if (new_other_ptr == netplay->connections_size)
+                  if (new_other_ptr == netplay->buffer_size)
                      return netplay_cmd_nak(netplay, connection);
 
                   netplay->other_ptr = new_other_ptr;
@@ -1988,6 +1985,16 @@ static bool netplay_get_cmd(netplay_t *netplay,
             }
             break;
          }
+
+      case NETPLAY_CMD_REPLAY_STOP:
+         if (netplay->replay_helper_status != NETPLAY_REPLAY_HELPER_ARE)
+         {
+            RARCH_ERR("Replay helper command to non-helper!\n");
+            return netplay_cmd_nak(netplay, connection);
+         }
+
+         netplay->replay_helper_active = false;
+         break;
 
       default:
          RARCH_ERR("%s.\n", msg_hash_to_str(MSG_UNKNOWN_NETPLAY_COMMAND_RECEIVED));
