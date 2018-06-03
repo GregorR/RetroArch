@@ -69,7 +69,8 @@ static bool pipe_trans(
       *rd = *wn = p->out_size;
       p->in += p->out_size;
       p->out += p->out_size;
-      *error = TRANS_STREAM_ERROR_BUFFER_FULL;
+      if (error)
+         *error = TRANS_STREAM_ERROR_BUFFER_FULL;
       return false;
    }
    else
@@ -78,7 +79,8 @@ static bool pipe_trans(
       *rd = *wn = p->in_size;
       p->in += p->in_size;
       p->out += p->in_size;
-      *error = TRANS_STREAM_ERROR_NONE;
+      if (error)
+         *error = TRANS_STREAM_ERROR_NONE;
       return true;
    }
 }
