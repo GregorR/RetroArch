@@ -246,26 +246,34 @@ ssize_t netplay_recv(struct socket_buffer *sbuf, int sockfd, void *buf,
    size_t len, bool block)
 {
    bool error;
+   size_t size;
    ssize_t recvd;
 
    /* Receive whatever we can into the buffer */
    if (sbuf->end >= sbuf->start)
    {
       error = false;
-      recvd = socket_receive_all_nonblocking(sockfd, &error,
-         sbuf->data + sbuf->end, sbuf->bufsz - sbuf->end -
-         ((sbuf->start == 0) ? 1 : 0));
-      if (recvd < 0 || error)
-         return -1;
-      sbuf->end += recvd;
-      if (sbuf->end >= sbuf->bufsz)
+      size = sbuf->bufsz - sbuf->end - ((sbuf->start == 0) ? 1 : 0);
+      if (size != 0)
       {
-         sbuf->end = 0;
-         error = false;
-         recvd = socket_receive_all_nonblocking(sockfd, &error, sbuf->data, sbuf->start - 1);
+         recvd = socket_receive_all_nonblocking(sockfd, &error,
+            sbuf->data + sbuf->end, size);
          if (recvd < 0 || error)
             return -1;
          sbuf->end += recvd;
+      }
+      if (sbuf->end >= sbuf->bufsz && sbuf->start > 0)
+      {
+         sbuf->end = 0;
+         error = false;
+         size = sbuf->start - 1;
+         if (size != 0)
+         {
+            recvd = socket_receive_all_nonblocking(sockfd, &error, sbuf->data, size);
+            if (recvd < 0 || error)
+               return -1;
+            sbuf->end += recvd;
+         }
 
       }
 
@@ -273,10 +281,14 @@ ssize_t netplay_recv(struct socket_buffer *sbuf, int sockfd, void *buf,
    else
    {
       error = false;
-      recvd = socket_receive_all_nonblocking(sockfd, &error, sbuf->data + sbuf->end, sbuf->start - sbuf->end - 1);
-      if (recvd < 0 || error)
-         return -1;
-      sbuf->end += recvd;
+      size = sbuf->start - sbuf->end - 1;
+      if (size != 0)
+      {
+         recvd = socket_receive_all_nonblocking(sockfd, &error, sbuf->data + sbuf->end, size);
+         if (recvd < 0 || error)
+            return -1;
+         sbuf->end += recvd;
+      }
 
    }
 
