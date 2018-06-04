@@ -478,6 +478,9 @@ static bool netplay_poll(void)
 
       if (netplay_data->replay_helper_status == NETPLAY_REPLAY_HELPER_ARE)
       {
+         netplay_send_flush(&netplay_data->one_connection.send_packet_buffer,
+               netplay_data->one_connection.fd, false);
+
          /* If we're a replay helper, are we not busy, or have we gotten ahead of our master? */
          if (!netplay_data->replay_helper_active)
          {
@@ -486,7 +489,7 @@ static bool netplay_poll(void)
          else if (netplay_data->read_frame_count[netplay_data->self_client_num]
                <= netplay_data->run_frame_count)
          {
-            netplay_data->stall = NETPLAY_STALL_SPECTATOR_WAIT;
+            netplay_data->stall = NETPLAY_STALL_REPLAY_HELPER_FAST;
          }
 
          if (netplay_data->stall)
@@ -1238,6 +1241,7 @@ void netplay_replay_helper_reqresp(netplay_t *netplay, uint32_t cmd, uint32_t fr
        !netplay_send(&connection->send_packet_buffer, connection->fd,
          serial_info->data_const, serial_info->size))
       netplay_hangup(netplay, connection);
+   netplay_send_flush(&connection->send_packet_buffer, connection->fd, false);
 }
 
 /**
@@ -1493,7 +1497,7 @@ bool netplay_driver_ctl(enum rarch_netplay_ctl_state state, void *data)
 
          case RARCH_NETPLAY_CTL_ENABLE_REPLAY_HELPER:
             netplay_is_replay_helper = true;
-            /* intentional fallthrough */
+            /* no break */
          case RARCH_NETPLAY_CTL_ENABLE_CLIENT:
             netplay_enabled = true;
             netplay_is_client = true;
@@ -1536,7 +1540,9 @@ bool netplay_driver_ctl(enum rarch_netplay_ctl_state state, void *data)
       case RARCH_NETPLAY_CTL_IS_ENABLED:
          goto done;
       case RARCH_NETPLAY_CTL_IS_REPLAYING:
-         ret = netplay_data->is_replay;
+         ret = (netplay_data->is_replay
+               || netplay_data->replay_helper_status
+                     == NETPLAY_REPLAY_HELPER_ARE);
          goto done;
       case RARCH_NETPLAY_CTL_IS_SERVER:
          ret = netplay_enabled && !netplay_is_client;

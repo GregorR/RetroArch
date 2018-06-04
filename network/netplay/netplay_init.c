@@ -272,6 +272,7 @@ static bool netplay_init_socket_buffers(netplay_t *netplay)
    size_t i;
    size_t packet_buffer_size = netplay->zbuffer_size +
       NETPLAY_MAX_STALL_FRAMES * 16;
+
    netplay->packet_buffer_size = packet_buffer_size;
 
    for (i = 0; i < netplay->connections_size; i++)
