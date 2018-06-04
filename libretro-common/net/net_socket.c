@@ -108,7 +108,12 @@ int socket_receive_all_blocking(int fd, void *data_, size_t size)
    {
       ssize_t ret = recv(fd, (char*)data, size, 0);
       if (ret <= 0)
+      {
+         if (isagain((int)ret))
+            continue;
+
          return false;
+      }
 
       data += ret;
       size -= ret;
