@@ -978,17 +978,18 @@ static void retroarch_parse_input_and_config(int argc, char *argv[])
          case RA_OPT_NETPLAY_REPLAY_HELPER:
             {
                settings_t *settings = config_get_ptr();
-               retroarch_override_setting_set(
-                     RARCH_OVERRIDE_SETTING_NETPLAY_IP_ADDRESS, NULL);
-               retroarch_override_setting_set(
-                     RARCH_OVERRIDE_SETTING_NETPLAY_IP_PORT, NULL);
+
+               /* Rather than worrying about overrides, since this session is
+                * hidden anyway, just make sure it doesn't save its settings */
+               settings->bools.config_save_on_exit = false;
+
                netplay_driver_ctl(RARCH_NETPLAY_CTL_ENABLE_REPLAY_HELPER, NULL);
                strlcpy(settings->paths.netplay_server, "127.0.0.1",
                      sizeof(settings->paths.netplay_server));
                configuration_set_uint(settings,
                      settings->uints.netplay_port,
                      (int)strtoul(optarg, NULL, 0));
-               //strcpy(settings->arrays.video_driver, "null");
+               /*strcpy(settings->arrays.video_driver, "null");*/
                strcpy(settings->arrays.audio_driver, "null");
                strcpy(settings->arrays.input_driver, "null");
                strcpy(settings->arrays.input_joypad_driver, "null");

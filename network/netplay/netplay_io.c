@@ -125,7 +125,12 @@ void netplay_hangup(netplay_t *netplay, struct netplay_connection *connection)
    netplay_deinit_socket_buffer(&connection->send_packet_buffer);
    netplay_deinit_socket_buffer(&connection->recv_packet_buffer);
 
-   if (!netplay->is_server)
+   if (connection == &netplay->replay_helper_connection)
+   {
+      netplay->replay_helper_status = NETPLAY_REPLAY_HELPER_NONE;
+      netplay->replay_helper_active = false;
+   }
+   else if (!netplay->is_server)
    {
       netplay->self_mode = NETPLAY_CONNECTION_NONE;
       netplay->connected_players &= (1L<<netplay->self_client_num);
@@ -217,11 +222,14 @@ void netplay_delayed_state_change(netplay_t *netplay)
 /* Send the specified input data */
 static bool send_input_frame(netplay_t *netplay, struct delta_frame *dframe,
       struct netplay_connection *only, struct netplay_connection *except,
-      uint32_t client_num, bool slave)
+      uint32_t client_num, bool replay_helper_only, bool slave)
 {
 #define BUFSZ 16 /* FIXME: Arbitrary restriction */
    uint32_t buffer[BUFSZ], devices, device;
    size_t bufused, i;
+
+   if (replay_helper_only && netplay->replay_helper_status != NETPLAY_REPLAY_HELPER_HAVE)
+      return true;
 
    /* Set up the basic buffer */
    bufused = 4;
@@ -301,29 +309,30 @@ bool netplay_send_cur_input(netplay_t *netplay,
    uint32_t from_client, to_client;
    struct delta_frame *dframe = &netplay->buffer[netplay->self_ptr];
 
-   if (netplay->is_server)
+   if (netplay->is_server || connection == &netplay->replay_helper_connection)
    {
       to_client = (uint32_t)(connection - netplay->connections + 1);
 
       /* Send the other players' input data (FIXME: This involves an
        * unacceptable amount of recalculating) */
-      for (from_client = 1; from_client < MAX_CLIENTS; from_client++)
+      for (from_client = 0; from_client < MAX_CLIENTS; from_client++)
       {
-         if (from_client == to_client)
+         if (from_client == to_client || from_client == netplay->self_client_num)
             continue;
           
          if ((netplay->connected_players & (1<<from_client)))
          {
             if (dframe->have_real[from_client])
             {
-               if (!send_input_frame(netplay, dframe, connection, NULL, from_client, false))
+               if (!send_input_frame(netplay, dframe, connection, NULL, from_client, false, false))
                   return false;
             }
          }
       }
 
       /* If we're not playing, send a NOINPUT */
-      if (netplay->self_mode != NETPLAY_CONNECTION_PLAYING)
+      if (netplay->is_server &&
+          netplay->self_mode != NETPLAY_CONNECTION_PLAYING)
       {
          uint32_t payload = htonl(netplay->self_frame_count);
          if (!netplay_send_raw_cmd(netplay, connection, NETPLAY_CMD_NOINPUT,
@@ -339,6 +348,7 @@ bool netplay_send_cur_input(netplay_t *netplay,
    {
       if (!send_input_frame(netplay, dframe, connection, NULL,
             netplay->self_client_num,
+            false,
             netplay->self_mode == NETPLAY_CONNECTION_SLAVE))
          return false;
    }
@@ -1077,12 +1087,10 @@ static bool netplay_get_cmd(netplay_t *netplay,
                   netplay->read_ptr[client_num] = NEXT_PTR(netplay->read_ptr[client_num]);
                   netplay->read_frame_count[client_num]++;
 
-                  if (netplay->is_server)
-                  {
-                     /* Forward it on if it's past data */
-                     if (dframe->frame <= netplay->self_frame_count)
-                        send_input_frame(netplay, dframe, NULL, connection, client_num, false);
-                  }
+                  /* Forward it on if it's past data */
+                  if (dframe->frame <= netplay->self_frame_count)
+                     send_input_frame(netplay, dframe, NULL, connection,
+                           client_num, !netplay->is_server, false);
                }
 
                /* If this was server data, advance our server pointer too */
@@ -1328,7 +1336,7 @@ static bool netplay_get_cmd(netplay_t *netplay,
                         }
                         dframe->have_local = true;
                         dframe->have_real[client_num] = true;
-                        send_input_frame(netplay, dframe, connection, NULL, client_num, false);
+                        send_input_frame(netplay, dframe, connection, NULL, client_num, false, false);
                         if (dframe->frame == netplay->self_frame_count) break;
                         NEXT();
                      }
@@ -2166,7 +2174,7 @@ void netplay_handle_slaves(netplay_t *netplay)
          }
 
          /* Send it along */
-         send_input_frame(netplay, frame, NULL, NULL, client_num, false);
+         send_input_frame(netplay, frame, NULL, NULL, client_num, false, false);
 
          /* And mark it as "read" */
          netplay->read_ptr[client_num] = NEXT_PTR(netplay->self_ptr);

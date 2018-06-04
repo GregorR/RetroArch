@@ -222,27 +222,35 @@ static bool init_tcp_socket(netplay_t *netplay, void *direct_host,
       struct sockaddr_in sin = {0};
       struct sockaddr_storage sad = {0};
 
-      // We only want to listen on lo, so make the addrinfo manually
+      /* We only want to listen on lo, so make the addrinfo manually */
       res = calloc(sizeof(struct addrinfo), 1);
       if (!res)
          return ret;
-      netplay->replay_helper_tcp_port = port+1;
 
-      res->ai_flags = AI_PASSIVE;
-      res->ai_family = AF_INET;
-      res->ai_socktype = SOCK_STREAM;
-      res->ai_addr = (struct sockaddr *) &sin;
-      res->ai_addrlen = sizeof(sin);
-      sin.sin_family = AF_INET;
-      sin.sin_addr.s_addr = htonl(0x7F000001);
-      sin.sin_port = htons(port+1);
+      /* Try ports up to port+32 (arbitrarily) */
+      uint16_t replay_port, replay_port_max = port + 33;
+      for (replay_port = port + 1;
+           netplay->replay_helper_listen_fd < 0 &&
+           replay_port != replay_port_max;
+           replay_port++)
+      {
+         netplay->replay_helper_tcp_port = replay_port;
+         res->ai_flags = AI_PASSIVE;
+         res->ai_family = AF_INET;
+         res->ai_socktype = SOCK_STREAM;
+         res->ai_addr = (struct sockaddr *) &sin;
+         res->ai_addrlen = sizeof(sin);
+         sin.sin_family = AF_INET;
+         sin.sin_addr.s_addr = htonl(0x7F000001);
+         sin.sin_port = htons(replay_port);
 
-      // And listen for it
-      netplay->replay_helper_listen_fd = init_tcp_connection(
-            res,
-            false,
-            (struct sockaddr*)&sad,
-            sizeof(sad));
+         /* Try listening on this port */
+         netplay->replay_helper_listen_fd = init_tcp_connection(
+               res,
+               false,
+               (struct sockaddr*)&sad,
+               sizeof(sad));
+      }
 
       free(res);
    }
