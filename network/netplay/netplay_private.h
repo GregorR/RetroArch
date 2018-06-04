@@ -184,11 +184,14 @@ enum netplay_cmd
    NETPLAY_CMD_REPLAY_REQ     = 0x0080,
 
    /* Stop replaying */
-   NETPLAY_CMD_REPLAY_STOP    = 0x0081,
+   NETPLAY_CMD_REPLAY_SYNC    = 0x0081,
+
+   /* Inform the host of the current replay state */
+   NETPLAY_CMD_REPLAY_STATUS  = 0x0082,
 
    /* Replay response. The replay helper sends this for every frame it replays,
     * until it's asked to stop. */
-   NETPLAY_CMD_REPLAY_RESP    = 0x0082
+   NETPLAY_CMD_REPLAY_RESP    = 0x0083
 };
 
 #define NETPLAY_CMD_SYNC_BIT_PAUSED    (1U<<31)
@@ -548,9 +551,6 @@ struct netplay
 
    /* The frame when the replay helper joined (it can't rewind before this point) */
    uint32_t replay_helper_join_frame;
-
-   /* The identifier of the current replay helper replay */
-   uint32_t replay_helper_replay;
 
    /* Size of savestates */
    size_t state_size;

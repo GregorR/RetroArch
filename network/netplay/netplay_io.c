@@ -915,7 +915,7 @@ static void handle_play_spectate(netplay_t *netplay, uint32_t client_num,
 #undef RECV
 #define RECV(buf, sz) \
 recvd = netplay_recv(&connection->recv_packet_buffer, connection->fd, (buf), \
-		     (sz), replay_helper); \
+		     (sz), block); \
 if (recvd >= 0 && recvd < (ssize_t) (sz)) goto shrt; \
 else if (recvd < 0)
 
@@ -926,6 +926,7 @@ static bool netplay_get_cmd(netplay_t *netplay,
    uint32_t cmd;
    uint32_t cmd_size;
    ssize_t recvd;
+   bool block = false;
 
    while (true)
    {
@@ -933,11 +934,8 @@ static bool netplay_get_cmd(netplay_t *netplay,
       if (connection->mode < NETPLAY_CONNECTION_CONNECTED)
          return netplay_handshake(netplay, connection, replay_helper, had_input);
 
-      /* Always nonblocking to read the command. With the local replay helper, we're blocking from that point on. */
-      recvd = netplay_recv(&connection->recv_packet_buffer, connection->fd,
-            &cmd, sizeof(cmd), false);
-      if (recvd >= 0 && recvd < sizeof(cmd))    goto shrt;
-      else if (recvd < 0)                       return false;
+      RECV(&cmd, sizeof(cmd))
+         return false;
 
       cmd      = ntohl(cmd);
 
@@ -947,8 +945,8 @@ static bool netplay_get_cmd(netplay_t *netplay,
       cmd_size = ntohl(cmd_size);
 
       /* Replay helpers can only send one command */
-      if ((replay_helper && cmd != NETPLAY_CMD_REPLAY_RESP) ||
-          (!replay_helper && cmd == NETPLAY_CMD_REPLAY_RESP))
+      if ((replay_helper && cmd != NETPLAY_CMD_REPLAY_RESP && cmd != NETPLAY_CMD_REPLAY_STATUS) ||
+          (!replay_helper && (cmd == NETPLAY_CMD_REPLAY_RESP || cmd == NETPLAY_CMD_REPLAY_STATUS)))
       {
          RARCH_ERR("Received invalid replay helper command!\n");
          return netplay_cmd_nak(netplay, connection);
@@ -1866,7 +1864,7 @@ static bool netplay_get_cmd(netplay_t *netplay,
                      uint32_t client_num;
                      uint32_t other_frame;
                   };
-                  uint32_t seq_num, sz;
+                  uint32_t sz;
                } data;
                size_t load_ptr;
                uint32_t load_frame_count;
@@ -1907,22 +1905,6 @@ static bool netplay_get_cmd(netplay_t *netplay,
                   /* Set our replay state as requested */
                   netplay->self_client_num = ntohl(data.client_num);
                   netplay->replay_helper_active = true;
-                  netplay->replay_helper_replay = ntohl(data.seq_num);
-               }
-               else
-               {
-                  /* We only care if this is the correct sequence */
-                  if (ntohl(data.seq_num) != netplay->replay_helper_replay ||
-                      !netplay->replay_helper_active)
-                  {
-                     /* Just discard this input */
-                     RECV(netplay->zbuffer, netplay->state_size)
-                     {
-                        RARCH_ERR("CMD_REPLAY_* failed to receive frame\n");
-                        return netplay_cmd_nak(netplay, connection);
-                     }
-                     break;
-                  }
                }
 
                /* Find the right frame to load into */
@@ -1974,15 +1956,16 @@ static bool netplay_get_cmd(netplay_t *netplay,
                   /* If we just loaded the current frame, bring it back */
                   if (load_frame_count == netplay->run_frame_count)
                   {
-                     netplay_send_raw_cmd(netplay, &netplay->replay_helper_connection,
-                           NETPLAY_CMD_REPLAY_STOP, NULL, 0);
-                     netplay->replay_helper_active = false;
                      core_unserialize(&serial_info);
+                     block = false;
                   }
 
                   /* Update our other frame count too */
                   if (new_other > netplay->other_frame_count)
                   {
+                     if (new_other > netplay->run_frame_count)
+                        new_other = netplay->run_frame_count;
+
                      for (new_other_ptr = 0; new_other_ptr < netplay->buffer_size; new_other_ptr++)
                      {
                         delta = &netplay->buffer[new_other_ptr];
@@ -1999,15 +1982,101 @@ static bool netplay_get_cmd(netplay_t *netplay,
                break;
             }
 
-         case NETPLAY_CMD_REPLAY_STOP:
-            if (netplay->replay_helper_status != NETPLAY_REPLAY_HELPER_ARE)
+         case NETPLAY_CMD_REPLAY_SYNC:
             {
-               RARCH_ERR("Replay helper command to non-helper!\n");
-               return netplay_cmd_nak(netplay, connection);
+               size_t send_ptr;
+               uint32_t send_frame_count, target_frame_count;
+               retro_ctx_serialize_info_t serial_info = {0};
+
+               if (netplay->replay_helper_status != NETPLAY_REPLAY_HELPER_ARE)
+               {
+                  RARCH_ERR("Replay helper command to non-helper!\n");
+                  return netplay_cmd_nak(netplay, connection);
+               }
+
+               RECV(&target_frame_count, sizeof(target_frame_count))
+               {
+                  RARCH_ERR("CMD_REPLAY_STOP failed to receive payload!\n");
+                  return netplay_cmd_nak(netplay, connection);
+               }
+               target_frame_count = ntohl(target_frame_count);
+
+               /* Get to the earlier frame to send */
+               send_ptr = netplay->run_ptr;
+               send_frame_count = netplay->run_frame_count;
+               while (send_frame_count > target_frame_count)
+               {
+                  send_ptr = PREV_PTR(send_ptr);
+                  send_frame_count--;
+               }
+
+               /* Send it */
+               serial_info.size = netplay->state_size;
+               serial_info.data_const = netplay->buffer[send_ptr].state;
+               netplay_replay_helper_reqresp(netplay, NETPLAY_CMD_REPLAY_RESP,
+                     send_frame_count, netplay->other_frame_count,
+                     &serial_info);
+
+#if 0
+               /* We've been asked to stop, so send our frames */
+               send_ptr = netplay->other_ptr;
+               send_frame_count = netplay->other_frame_count;
+               serial_info.size = netplay->state_size;
+               while (send_frame_count <= netplay->run_frame_count)
+               {
+                  struct delta_frame *delta = &netplay->buffer[send_ptr];
+                  serial_info.data_const = delta->state;
+                  netplay_replay_helper_reqresp(netplay, NETPLAY_CMD_REPLAY_RESP,
+                        send_frame_count, netplay->other_frame_count,
+                        &serial_info);
+
+                  send_ptr = NEXT_PTR(send_ptr);
+                  send_frame_count++;
+               }
+#endif
+               netplay_send_flush(&netplay->one_connection.send_packet_buffer,
+                     netplay->one_connection.fd, true);
+
+               /* Now return to replaying */
+               netplay->run_ptr = netplay->other_ptr;
+               netplay->run_frame_count = netplay->other_frame_count;
+               serial_info.data_const = netplay->buffer[netplay->run_ptr].state;
+               core_unserialize(&serial_info);
+
+               break;
             }
 
-            netplay->replay_helper_active = false;
-            break;
+         case NETPLAY_CMD_REPLAY_STATUS:
+            {
+               uint32_t frame, seq;
+               if (!replay_helper)
+               {
+                  RARCH_ERR("Replay helper command by non-helper!\n");
+                  return netplay_cmd_nak(netplay, connection);
+               }
+
+               RECV(&frame, sizeof(frame))
+               {
+                  RARCH_ERR("CMD_REPLAY_STATUS failed to receive payload!\n");
+                  return netplay_cmd_nak(netplay, connection);
+               }
+
+               frame = ntohl(frame);
+
+               if (frame >= netplay->run_frame_count)
+               {
+                  uint32_t data = htonl(netplay->run_frame_count);
+
+                  /* The replay has caught up, so sync and get its frame */
+                  block = true;
+                  netplay_send_raw_cmd(netplay, connection,
+                        NETPLAY_CMD_REPLAY_SYNC, &data, sizeof(data));
+                  netplay_send_flush(
+                        &netplay->replay_helper_connection.send_packet_buffer,
+                        netplay->replay_helper_connection.fd, true);
+               }
+               break;
+            }
 
          default:
             RARCH_ERR("%s.\n", msg_hash_to_str(MSG_UNKNOWN_NETPLAY_COMMAND_RECEIVED));

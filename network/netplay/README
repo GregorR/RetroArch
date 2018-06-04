@@ -345,27 +345,38 @@ Payload:
     {
        frame number to start replay: uint32
        client number requesting: uint32
-       request sequence number: uint32
        uncompressed size: uint32
        serialized save state: blob (variable size)
     }
 Description:
-    Only to be sent to a replay helper. Requests a replay from the given frame
-    on behalf of the given client.
+    Only to be sent to a replay helper. Requests that the replay helper begin
+    replays, its main mode. From this point on, every time REPLAY_SYNC is sent,
+    the replay helper will send a synchronizing frame and then restart from its
+    own other pointer. The host no longer performs replays.
 
-Command: REPLAY_STOP
+Command: REPLAY_SYNC
 Payload:
     {
+       frame number: uint32
     }
 Description:
-    Only to be sent to a replay helper. Stop the current replay.
+    Only to be sent to a replay helper. Stop the current replay and flush the
+    requested frame back to the host, then begin replaying again.
+
+Command: REPLAY_STATUS
+Payload:
+    {
+       frame number: uint32
+    }
+Description:
+    Only to be sent by a replay helper. Informs the host of the status of
+    replaying.
 
 Command: REPLAY_RESP
 Payload:
     {
        frame number: uint32
        "other" frame: uint32
-       request sequence number: uint32
        uncompressed size: uint32
        serialized save state: blob (variable size)
     }

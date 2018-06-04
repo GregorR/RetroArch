@@ -586,11 +586,13 @@ bool netplay_sync_pre_frame(netplay_t *netplay)
              netplay->replay_helper_status == NETPLAY_REPLAY_HELPER_ARE &&
              netplay->replay_helper_active)
          {
-            /* Send this state to the main instance */
-            serial_info.data_const = serial_info.data;
-            netplay_replay_helper_reqresp(netplay, NETPLAY_CMD_REPLAY_RESP,
-                  netplay->run_frame_count, netplay->other_frame_count,
-                  &serial_info);
+            uint32_t data;
+
+            /* Tell the main instance where we are */
+            data = htonl(netplay->run_frame_count);
+            netplay_send_raw_cmd(netplay, &netplay->one_connection,
+                  NETPLAY_CMD_REPLAY_STATUS, &data, sizeof(data));
+
          }
 
       }
@@ -849,6 +851,9 @@ void netplay_sync_post_frame(netplay_t *netplay, bool stalled)
       netplay->force_reset = false;
    }
 
+   if (netplay->replay_helper_active)
+      return;
+
    netplay->replay_ptr = netplay->other_ptr;
    netplay->replay_frame_count = netplay->other_frame_count;
 
@@ -908,7 +913,6 @@ void netplay_sync_post_frame(netplay_t *netplay, bool stalled)
             serial_info.size = netplay->state_size;
             serial_info.data = NULL;
             serial_info.data_const = netplay->buffer[netplay->replay_ptr].state;
-            netplay->replay_helper_replay++;
             netplay_replay_helper_reqresp(netplay, NETPLAY_CMD_REPLAY_REQ,
                   netplay->replay_frame_count, netplay->self_client_num,
                   &serial_info);

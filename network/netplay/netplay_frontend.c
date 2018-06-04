@@ -1221,7 +1221,7 @@ void netplay_load_savestate(netplay_t *netplay,
 void netplay_replay_helper_reqresp(netplay_t *netplay, uint32_t cmd, uint32_t frame,
       uint32_t second, retro_ctx_serialize_info_t *serial_info)
 {
-   uint32_t header[6];
+   uint32_t header[5];
    struct netplay_connection *connection;
    if (cmd == NETPLAY_CMD_REPLAY_REQ)
       connection = &netplay->replay_helper_connection;
@@ -1233,8 +1233,7 @@ void netplay_replay_helper_reqresp(netplay_t *netplay, uint32_t cmd, uint32_t fr
    header[1] = htonl(serial_info->size + 4*sizeof(uint32_t));
    header[2] = htonl(frame);
    header[3] = htonl(second);
-   header[4] = htonl(netplay->replay_helper_replay);
-   header[5] = htonl(serial_info->size);
+   header[4] = htonl(serial_info->size);
 
    if (!netplay_send(&connection->send_packet_buffer, connection->fd, header,
          sizeof(header)) ||
