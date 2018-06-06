@@ -1888,7 +1888,7 @@ static bool netplay_get_cmd(netplay_t *netplay,
                   }
                }
 
-               if (cmd_size != netplay->state_size + 4*sizeof(uint32_t))
+               if (cmd_size != netplay->state_size + 3*sizeof(uint32_t))
                {
                   RARCH_ERR("CMD_REPLAY_* with incorrect payload size.\n");
                   return netplay_cmd_nak(netplay, connection);
@@ -1942,10 +1942,9 @@ static bool netplay_get_cmd(netplay_t *netplay,
                if (cmd == NETPLAY_CMD_REPLAY_REQ)
                {
                   /* And return to it */
-                  netplay->other_ptr = load_ptr;
-                  netplay->other_frame_count = load_frame_count;
-                  netplay->run_ptr = load_ptr;
-                  netplay->run_frame_count = load_frame_count;
+                  netplay->self_ptr = load_ptr;
+                  netplay->self_frame_count = load_frame_count;
+                  netplay_force_future(netplay);
                   core_unserialize(&serial_info);
                }
                else

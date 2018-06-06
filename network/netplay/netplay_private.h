@@ -760,6 +760,15 @@ bool netplay_lan_ad_server(netplay_t *netplay);
  **************************************************************/
 
 /**
+ * netplay_force_future
+ * @netplay              : pointer to netplay object
+ *
+ * Force netplay to ignore all past input, typically because we've just loaded
+ * a state or reset.
+ */
+void netplay_force_future(netplay_t *netplay);
+
+/**
  * netplay_load_savestate
  * @netplay              : pointer to netplay object
  * @serial_info          : the savestate being loaded, NULL means

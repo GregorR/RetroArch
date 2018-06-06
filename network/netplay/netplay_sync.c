@@ -838,12 +838,6 @@ void netplay_sync_post_frame(netplay_t *netplay, bool stalled)
       return;
    }
 
-   if (netplay->replay_helper_status == NETPLAY_REPLAY_HELPER_ARE)
-   {
-      /* If we're the replay helper, ALL of our playing is replaying */
-      return;
-   }
-
    /* Reset if it was requested */
    if (netplay->force_reset)
    {
@@ -857,7 +851,6 @@ void netplay_sync_post_frame(netplay_t *netplay, bool stalled)
    netplay->replay_ptr = netplay->other_ptr;
    netplay->replay_frame_count = netplay->other_frame_count;
 
-#if 0
 #ifndef DEBUG_NONDETERMINISTIC_CORES
    if (!netplay->force_rewind)
    {
@@ -896,7 +889,6 @@ void netplay_sync_post_frame(netplay_t *netplay, bool stalled)
       }
    }
 #endif
-#endif
 
    /* Now replay the real input if we've gotten ahead of it */
    if (netplay->force_rewind ||
@@ -908,16 +900,17 @@ void netplay_sync_post_frame(netplay_t *netplay, bool stalled)
           netplay->replay_frame_count >= netplay->replay_helper_join_frame)
       {
          /* Make the replay helper do it! */
-         if (!netplay->replay_helper_active)
-         {
-            serial_info.size = netplay->state_size;
-            serial_info.data = NULL;
-            serial_info.data_const = netplay->buffer[netplay->replay_ptr].state;
-            netplay_replay_helper_reqresp(netplay, NETPLAY_CMD_REPLAY_REQ,
-                  netplay->replay_frame_count, netplay->self_client_num,
-                  &serial_info);
-            netplay->replay_helper_active = true;
-         }
+         serial_info.size = netplay->state_size;
+         serial_info.data = NULL;
+         serial_info.data_const = netplay->buffer[netplay->replay_ptr].state;
+         fprintf(stderr, "Sending replay request\n");
+         netplay_replay_helper_reqresp(netplay, NETPLAY_CMD_REPLAY_REQ,
+               netplay->replay_frame_count, netplay->self_client_num,
+               &serial_info);
+         netplay_send_flush(
+               &netplay->replay_helper_connection.send_packet_buffer,
+               netplay->replay_helper_connection.fd, true);
+         netplay->replay_helper_active = true;
 
       }
       else

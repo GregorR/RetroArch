@@ -484,10 +484,11 @@ static bool netplay_poll(void)
          /* If we're a replay helper, are we not busy, or have we gotten ahead of our master? */
          if (!netplay_data->replay_helper_active)
          {
-            netplay_data->stall = NETPLAY_STALL_REPLAY_HELPER_INACTIVE;
+            /* Don't stall per se, since we still need to accept input, but don't run the core either */
+            return false;
          }
          else if (netplay_data->read_frame_count[netplay_data->self_client_num]
-               <= netplay_data->run_frame_count)
+                  <= netplay_data->run_frame_count)
          {
             netplay_data->stall = NETPLAY_STALL_REPLAY_HELPER_FAST;
          }
@@ -1049,7 +1050,7 @@ void netplay_post_frame(netplay_t *netplay)
  * Force netplay to ignore all past input, typically because we've just loaded
  * a state or reset.
  */
-static void netplay_force_future(netplay_t *netplay)
+void netplay_force_future(netplay_t *netplay)
 {
    /* Wherever we're inputting, that's where we consider our state to be loaded */
    netplay->run_ptr = netplay->self_ptr;
@@ -1230,7 +1231,7 @@ void netplay_replay_helper_reqresp(netplay_t *netplay, uint32_t cmd, uint32_t fr
 
    /* Send it to the replay helper */
    header[0] = htonl(cmd);
-   header[1] = htonl(serial_info->size + 4*sizeof(uint32_t));
+   header[1] = htonl(serial_info->size + 3*sizeof(uint32_t));
    header[2] = htonl(frame);
    header[3] = htonl(second);
    header[4] = htonl(serial_info->size);
